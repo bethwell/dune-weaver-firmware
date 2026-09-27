@@ -463,7 +463,16 @@ void protocol_main_loop() {
             // Theta zero offset (UI "Sensor Offset"): pattern theta=0 sits this
             // many radians from the home reference.  Applied to both polar modes.
             float theta_offset_rad = theta_offset ? (theta_offset->get() * DEG_TO_RAD) : 0.0f;
-            if (Kinematics::ThetaRho::active() && homing_mode && homing_mode->get() == HomingCrash) {
+            // Switchless auto-fallback: a polar (ThetaRho) table whose Y motor
+            // has no limit switch can never complete a sensor $H -- the homing
+            // state machine has no pin transition to find, so it just grinds
+            // the carriage into the centre stop.  On such tables $Sand/Home
+            // crash-homes regardless of $Sand/HomingMode, so the app's Home
+            // button works with zero setup; switch-equipped tables keep the
+            // setting's sensor/crash choice.
+            bool ySwitchless = !(config && config->_axes && config->_axes->_numberAxis > Y_AXIS && config->_axes->_axis[Y_AXIS] &&
+                                 config->_axes->_axis[Y_AXIS]->_motors[0] && config->_axes->_axis[Y_AXIS]->_motors[0]->hasSwitches());
+            if (Kinematics::ThetaRho::active() && ((homing_mode && homing_mode->get() == HomingCrash) || ySwitchless)) {
                 protocol_run_crash_home(theta_offset_rad);
             } else {
                 // Set the theta limit-switch home position so $H (and any
@@ -851,9 +860,19 @@ static void protocol_run_crash_home(float theta_offset_rad) {
         }
     }
 
+    // Crash feed: use the Y axis homing feed_mm_per_min from config.yaml when
+    // it is configured, so the YAML controls how firmly the carriage leans on
+    // the stop (a slow feed makes the stall gentle on switchless tables).
+    // Otherwise fall back to the built-in default.
+    int feed = CRASH_HOME_FEED_MM_MIN;
+    if (config && config->_axes && config->_axes->_numberAxis > Y_AXIS && config->_axes->_axis[Y_AXIS] &&
+        config->_axes->_axis[Y_AXIS]->_homing && config->_axes->_axis[Y_AXIS]->_homing->_feedRate >= 1.0f) {
+        feed = static_cast<int>(config->_axes->_axis[Y_AXIS]->_homing->_feedRate);
+    }
+
     // Y homes negative -> drive toward the rho=0 (centre) stop.
     char jog[LINE_BUFFER_SIZE];
-    snprintf(jog, sizeof(jog), "$J=G91 Y-%.3f F%d", dist, CRASH_HOME_FEED_MM_MIN);
+    snprintf(jog, sizeof(jog), "$J=G91 Y-%.3f F%d", dist, feed);
     execute_line(jog, allChannels, AuthenticationLevel::LEVEL_GUEST);
 
     // Wait for the carriage to reach (and skip steps against) the stop.
