@@ -860,6 +860,29 @@ static void protocol_run_crash_home(float theta_offset_rad) {
         }
     }
 
+    // Short-travel crash: when the rho position is already known (a previous
+    // home succeeded since boot), the current Y mpos IS the remaining distance
+    // to the stop (mpos Y=0 sits at the stop), so jog only that plus a small
+    // margin for step-slip since the last home.  A blind full-travel drive from
+    // the perimeter would grind against the stop for the whole commanded
+    // distance (~minutes); from a known position the stall lasts only the
+    // margin.  Unknown position (fresh boot) still jogs the full travel.
+    if (Machine::Homing::homed_since_boot() && Machine::Homing::axis_is_homed(Y_AXIS)) {
+        float* mpos = get_mpos();
+        if (mpos && mpos[Y_AXIS] > 0.0f) {
+            float margin  = 5.0f;  // mm of gentle stall to absorb step-slip
+            float needed  = mpos[Y_AXIS] + margin;
+            float maxT    = (config && config->_axes && config->_axes->_axis[Y_AXIS]) ? config->_axes->_axis[Y_AXIS]->_maxTravel : 0.0f;
+            if (maxT > 0.0f && needed > maxT) {
+                needed = maxT;  // never jog farther than the configured travel
+            }
+            if (needed < dist) {
+                log_info("Crash home: position known, jogging " << needed << " mm instead of " << dist);
+                dist = needed;
+            }
+        }
+    }
+
     // Crash feed: use the Y axis homing feed_mm_per_min from config.yaml when
     // it is configured, so the YAML controls how firmly the carriage leans on
     // the stop (a slow feed makes the stall gentle on switchless tables).
