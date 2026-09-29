@@ -873,9 +873,13 @@ static void protocol_run_crash_home(float theta_offset_rad) {
     // button uses).  Glide rho to 0 through the kinematics -- a normal planned
     // move that decelerates and stops AT the target, never touching the stop --
     // then relabel theta and declare rho=0.  Silent, no stall, no rattle.
-    // Only an unknown position (fresh boot) falls through to the blind crash
-    // drive below, which re-synchronises the mechanics against the stop.
-    if (Machine::Homing::homed_since_boot() && Machine::Homing::axis_is_homed(Y_AXIS)) {
+    // The position is considered known when a home succeeded this boot OR the
+    // config sets must_home: false (position trusted from boot -- the goto
+    // buttons work at once on such tables).  Only a genuinely unknown position
+    // (must_home: true and no home yet this boot) falls through to the blind
+    // crash drive below, which re-synchronises the mechanics against the stop.
+    if ((Machine::Homing::homed_since_boot() && Machine::Homing::axis_is_homed(Y_AXIS)) ||
+        (config && config->_start && !config->_start->_mustHome)) {
         float* pos = get_mpos();
         if (pos && pos[Y_AXIS] > 0.001f) {
             char gline[LINE_BUFFER_SIZE];
