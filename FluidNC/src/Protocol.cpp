@@ -860,37 +860,43 @@ static void protocol_run_crash_home(float theta_offset_rad) {
         }
     }
 
-    // Short-travel crash: when the rho position is already known (a previous
-    // home succeeded since boot), the current Y mpos IS the remaining distance
-    // to the stop (mpos Y=0 sits at the stop), so jog only that plus a small
-    // margin for step-slip since the last home.  A blind full-travel drive from
-    // the perimeter would grind against the stop for the whole commanded
-    // distance (~minutes); from a known position the stall lasts only the
-    // margin.  Unknown position (fresh boot) still jogs the full travel.
-    if (Machine::Homing::homed_since_boot() && Machine::Homing::axis_is_homed(Y_AXIS)) {
-        float* mpos = get_mpos();
-        if (mpos && mpos[Y_AXIS] > 0.0f) {
-            float margin  = 5.0f;  // mm of gentle stall to absorb step-slip
-            float needed  = mpos[Y_AXIS] + margin;
-            float maxT    = (config && config->_axes && config->_axes->_axis[Y_AXIS]) ? config->_axes->_axis[Y_AXIS]->_maxTravel : 0.0f;
-            if (maxT > 0.0f && needed > maxT) {
-                needed = maxT;  // never jog farther than the configured travel
-            }
-            if (needed < dist) {
-                log_info("Crash home: position known, jogging " << needed << " mm instead of " << dist);
-                dist = needed;
-            }
-        }
-    }
-
-    // Crash feed: use the Y axis homing feed_mm_per_min from config.yaml when
-    // it is configured, so the YAML controls how firmly the carriage leans on
-    // the stop (a slow feed makes the stall gentle on switchless tables).
-    // Otherwise fall back to the built-in default.
+    // Home feed: use the Y axis homing feed_mm_per_min from config.yaml when
+    // it is configured (a slow feed is gentle on the mechanism); otherwise
+    // fall back to the built-in default.
     int feed = CRASH_HOME_FEED_MM_MIN;
     if (config && config->_axes && config->_axes->_numberAxis > Y_AXIS && config->_axes->_axis[Y_AXIS] &&
         config->_axes->_axis[Y_AXIS]->_homing && config->_axes->_axis[Y_AXIS]->_homing->_feedRate >= 1.0f) {
         feed = static_cast<int>(config->_axes->_axis[Y_AXIS]->_homing->_feedRate);
+    }
+
+    // Known position: goto-style home (the same planner path the app's centre
+    // button uses).  Glide rho to 0 through the kinematics -- a normal planned
+    // move that decelerates and stops AT the target, never touching the stop --
+    // then relabel theta and declare rho=0.  Silent, no stall, no rattle.
+    // Only an unknown position (fresh boot) falls through to the blind crash
+    // drive below, which re-synchronises the mechanics against the stop.
+    if (Machine::Homing::homed_since_boot() && Machine::Homing::axis_is_homed(Y_AXIS)) {
+        float* pos = get_mpos();
+        if (pos && pos[Y_AXIS] > 0.001f) {
+            char gline[LINE_BUFFER_SIZE];
+            snprintf(gline, sizeof(gline), "G90G1 Y0 F%d", feed);
+            execute_line(gline, allChannels, AuthenticationLevel::LEVEL_GUEST);
+            protocol_buffer_synchronize();
+            if (sys.abort) {
+                return;  // a reset/abort interrupted the move; leave state as-is
+            }
+        }
+        float mpos[MAX_N_AXIS] = { 0.0f };
+        mpos[X_AXIS]           = theta_offset_rad;
+        set_motor_steps_from_mpos(mpos);
+        gc_sync_position();
+        plan_sync_position();
+        Machine::Homing::set_axis_homed(X_AXIS);
+        Machine::Homing::set_axis_homed(Y_AXIS);
+        Machine::Homing::set_homed_since_boot();
+        set_state(State::Idle);
+        log_msg("Goto homed: theta=" << mpos[X_AXIS] << " rho=0");
+        return;
     }
 
     // Y homes negative -> drive toward the rho=0 (centre) stop.
