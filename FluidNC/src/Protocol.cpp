@@ -889,6 +889,28 @@ static void protocol_run_crash_home(float theta_offset_rad) {
             if (sys.abort) {
                 return;  // a reset/abort interrupted the move; leave state as-is
             }
+        } else {
+            // Believed to already be at the stop (fresh boot: counters start
+            // at 0).  Do a short out-and-back wiggle so Home always produces
+            // REAL motion and a visible position change -- the app unlocks its
+            // controls after seeing motion/status updates, and a no-op home
+            // (move skipped, position already reported as rho=0) left every
+            // app button dead after a reboot until some other button moved.
+            // Y here is normalised rho (0..1) through the kinematics, so
+            // 0.05 is a small outward step of 5% of travel.
+            char wline[LINE_BUFFER_SIZE];
+            snprintf(wline, sizeof(wline), "G90G1 Y0.05 F%d", feed);
+            execute_line(wline, allChannels, AuthenticationLevel::LEVEL_GUEST);
+            protocol_buffer_synchronize();
+            if (sys.abort) {
+                return;
+            }
+            snprintf(wline, sizeof(wline), "G90G1 Y0 F%d", feed);
+            execute_line(wline, allChannels, AuthenticationLevel::LEVEL_GUEST);
+            protocol_buffer_synchronize();
+            if (sys.abort) {
+                return;
+            }
         }
         float mpos[MAX_N_AXIS] = { 0.0f };
         mpos[X_AXIS]           = theta_offset_rad;
