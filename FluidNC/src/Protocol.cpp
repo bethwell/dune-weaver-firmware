@@ -862,11 +862,21 @@ static void protocol_run_crash_home(float theta_offset_rad) {
 
     // Home feed: use the Y axis homing feed_mm_per_min from config.yaml when
     // it is configured (a slow feed is gentle on the mechanism); otherwise
-    // fall back to the built-in default.
+    // fall back to the built-in default.  This is the CRASH (blind stall) feed.
     int feed = CRASH_HOME_FEED_MM_MIN;
     if (config && config->_axes && config->_axes->_numberAxis > Y_AXIS && config->_axes->_axis[Y_AXIS] &&
         config->_axes->_axis[Y_AXIS]->_homing && config->_axes->_axis[Y_AXIS]->_homing->_feedRate >= 1.0f) {
         feed = static_cast<int>(config->_axes->_axis[Y_AXIS]->_homing->_feedRate);
+    }
+
+    // Goto-home traversal feed: the same $THR/Feed the app's goto buttons use
+    // (motor mm/min).  The homing feed above is a stall-softening rate (e.g.
+    // 40 mm/min); using it for the full traverse made a perimeter home crawl
+    // for minutes and look like a stall.  Fall back to the crash feed if the
+    // setting is unset.
+    int gfeed = Kinematics::ThetaRho::effectiveFeed();
+    if (gfeed <= 0) {
+        gfeed = feed;
     }
 
     // Known position: goto-style home (the same planner path the app's centre
@@ -883,7 +893,7 @@ static void protocol_run_crash_home(float theta_offset_rad) {
         float* pos = get_mpos();
         if (pos && pos[Y_AXIS] > 0.001f) {
             char gline[LINE_BUFFER_SIZE];
-            snprintf(gline, sizeof(gline), "G90G1 Y0 F%d", feed);
+            snprintf(gline, sizeof(gline), "G90G1 Y0 F%d", gfeed);
             execute_line(gline, allChannels, AuthenticationLevel::LEVEL_GUEST);
             protocol_buffer_synchronize();
             if (sys.abort) {
@@ -899,13 +909,13 @@ static void protocol_run_crash_home(float theta_offset_rad) {
             // Y here is normalised rho (0..1) through the kinematics, so
             // 0.05 is a small outward step of 5% of travel.
             char wline[LINE_BUFFER_SIZE];
-            snprintf(wline, sizeof(wline), "G90G1 Y0.05 F%d", feed);
+            snprintf(wline, sizeof(wline), "G90G1 Y0.05 F%d", gfeed);
             execute_line(wline, allChannels, AuthenticationLevel::LEVEL_GUEST);
             protocol_buffer_synchronize();
             if (sys.abort) {
                 return;
             }
-            snprintf(wline, sizeof(wline), "G90G1 Y0 F%d", feed);
+            snprintf(wline, sizeof(wline), "G90G1 Y0 F%d", gfeed);
             execute_line(wline, allChannels, AuthenticationLevel::LEVEL_GUEST);
             protocol_buffer_synchronize();
             if (sys.abort) {
