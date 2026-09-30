@@ -90,6 +90,13 @@ namespace Kinematics {
         // here, plain cartesian mm (G-code patterns) on CoreXY/Cartesian.
         static bool active() { return _instance != nullptr; }
 
+        // Convert a Y-motor distance in mm to the normalized rho units the
+        // planner uses (G-code Y goes through cartesian_to_motors, which
+        // scales rho by rho_mm).  Crash home wants "N motor mm into the
+        // stop"; this returns N / rho_mm so a planned G1 moves exactly N mm
+        // of motor.  -1 if no ThetaRho kinematics is configured.
+        static float rhoForMotorMm(float motor_mm) { return _instance ? motor_mm / _instance->_rho_mm : -1.0f; }
+
         ~ThetaRho() {}
 
     private:

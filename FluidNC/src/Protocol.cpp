@@ -840,9 +840,9 @@ void protocol_do_start_home() {
 //
 // Runs ONLY in protocol_main_loop (the main task) for the same reason as $H: the
 // blocking buffer-synchronize below pumps segment prep, which must not race the
-// main loop's own prep (see rtStartHome).  We use a $J= jog, not G1, so motion
-// is applied to the Y MOTOR directly (bypassing the ThetaRho coupling) -- only
-// rho drives into the stop; theta is left in place and simply zeroed.
+// main loop's own prep (see rtStartHome).  A G1 move goes through the ThetaRho
+// kinematics (Y = normalized rho), so the crash distance is converted to rho
+// units -- only rho drives toward the stop; theta is left in place and zeroed.
 static void protocol_run_crash_home(float theta_offset_rad) {
     // Clear the power-on Unhomed alarm so jog motion is permitted.
     if (state_is(State::Alarm)) {
@@ -945,9 +945,23 @@ static void protocol_run_crash_home(float theta_offset_rad) {
     }
 
     // Y homes negative -> drive toward the rho=0 (centre) stop.
+    // The jog goes through the ThetaRho kinematics, where the G-code Y word
+    // is NORMALIZED rho (0..1), scaled to motor mm by rho_mm -- NOT motor mm.
+    // The original $J=G91 Y-<dist_mm> therefore commanded dist*20 = 500 mm
+    // of motor travel (minutes of grinding into the stop = the "endless
+    // rattle").  Convert the motor-mm distance to rho units first so the
+    // planned move is exactly dist motor mm.
+    float dist_rho = Kinematics::ThetaRho::rhoForMotorMm(dist);
+    if (dist_rho <= 0.0f) {
+        log_error("crash home: no ThetaRho kinematics for rho conversion");
+        return;
+    }
     char jog[LINE_BUFFER_SIZE];
-    snprintf(jog, sizeof(jog), "$J=G91 Y-%.3f F%d", dist, sfeed);
+    snprintf(jog, sizeof(jog), "G91G1 Y-%.4f F%d", dist_rho, sfeed);
     execute_line(jog, allChannels, AuthenticationLevel::LEVEL_GUEST);
+    // Restore absolute mode: the goto path and .thr patterns assume G90.
+    char g90[] = "G90";
+    execute_line(g90, allChannels, AuthenticationLevel::LEVEL_GUEST);
 
     // Wait for the carriage to reach (and skip steps against) the stop.
     protocol_buffer_synchronize();
