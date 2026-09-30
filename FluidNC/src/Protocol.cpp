@@ -850,15 +850,16 @@ static void protocol_run_crash_home(float theta_offset_rad) {
         execute_line(unlock, allChannels, AuthenticationLevel::LEVEL_GUEST);
     }
 
-    // Jog the full rho travel so the carriage reaches the stop regardless of
-    // where it started.  Jog distance is in Y-motor mm (kinematics bypassed).
-    float dist = 50.0f;  // safe fallback if the axis/travel isn't configured
-    if (config && config->_axes && config->_axes->_numberAxis > Y_AXIS && config->_axes->_axis[Y_AXIS]) {
-        float mt = config->_axes->_axis[Y_AXIS]->_maxTravel;
-        if (mt > 0.0f) {
-            dist = mt;
-        }
-    }
+    // Jog distance: on the first home after a boot the position is unknown,
+    // and a blind drive into the stop is the only way to find centre without
+    // a switch.  Use the ORIGINAL Dune Weaver's short nudge (~25 mm, the
+    // arm is expected to be parked near centre at power-off) instead of the
+    // full travel: a few seconds of gentle stall-clicking, not minutes of
+    // grinding.  Caveat (same as the original): if the ball was left far
+    // from centre at power-off, the short drive cannot reach the stop --
+    // park at centre before powering off, or re-run home from a known
+    // position after moving the ball with the app buttons.
+    float dist = 25.0f;  // short crash nudge, matching the original project
 
     // Home feed: use the Y axis homing feed_mm_per_min from config.yaml when
     // it is configured (a slow feed is gentle on the mechanism); otherwise
@@ -879,17 +880,25 @@ static void protocol_run_crash_home(float theta_offset_rad) {
         gfeed = feed;
     }
 
+    // Short-crash drive feed: the Y homing seek_mm_per_min when configured.
+    // The seek rate (e.g. 80 mm/min) moves the ~25 mm nudge briskly enough
+    // that the stall lasts seconds, unlike the feed rate (40) which would
+    // click for half a minute.
+    int sfeed = feed;
+    if (config && config->_axes && config->_axes->_numberAxis > Y_AXIS && config->_axes->_axis[Y_AXIS] &&
+        config->_axes->_axis[Y_AXIS]->_homing && config->_axes->_axis[Y_AXIS]->_homing->_seekRate >= 1.0f) {
+        sfeed = static_cast<int>(config->_axes->_axis[Y_AXIS]->_homing->_seekRate);
+    }
+
     // Known position: goto-style home (the same planner path the app's centre
     // button uses).  Glide rho to 0 through the kinematics -- a normal planned
     // move that decelerates and stops AT the target, never touching the stop --
     // then relabel theta and declare rho=0.  Silent, no stall, no rattle.
-    // The position is considered known when a home succeeded this boot OR the
-    // config sets must_home: false (position trusted from boot -- the goto
-    // buttons work at once on such tables).  Only a genuinely unknown position
-    // (must_home: true and no home yet this boot) falls through to the blind
-    // crash drive below, which re-synchronises the mechanics against the stop.
-    if ((Machine::Homing::homed_since_boot() && Machine::Homing::axis_is_homed(Y_AXIS)) ||
-        (config && config->_start && !config->_start->_mustHome)) {
+    // "Known" means a home already succeeded THIS boot: on a fresh boot the
+    // counters are zero and the machine only BELIEVES it is at centre, so the
+    // first home must run the real (short) crash drive below to make that
+    // belief true.  Every home after that takes this silent goto path.
+    if (Machine::Homing::homed_since_boot()) {
         float* pos = get_mpos();
         if (pos && pos[Y_AXIS] > 0.001f) {
             char gline[LINE_BUFFER_SIZE];
@@ -937,7 +946,7 @@ static void protocol_run_crash_home(float theta_offset_rad) {
 
     // Y homes negative -> drive toward the rho=0 (centre) stop.
     char jog[LINE_BUFFER_SIZE];
-    snprintf(jog, sizeof(jog), "$J=G91 Y-%.3f F%d", dist, feed);
+    snprintf(jog, sizeof(jog), "$J=G91 Y-%.3f F%d", dist, sfeed);
     execute_line(jog, allChannels, AuthenticationLevel::LEVEL_GUEST);
 
     // Wait for the carriage to reach (and skip steps against) the stop.
